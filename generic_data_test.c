@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 //Change the data type here
 typedef double DATA_TYPE;
@@ -24,6 +25,7 @@ int compfunc(DATA_TYPE *a, DATA_TYPE *b){
 void testcomp(void *data, size_t data_length, size_t data_size, int (*comp)(void *, void *)) {
 	int i, retval;
 	void *data1, *data2; 
+	void *tempdata = malloc(data_size);
 	
 	for(i=0; i<data_length-1; i++)
 	{
@@ -34,9 +36,16 @@ void testcomp(void *data, size_t data_length, size_t data_size, int (*comp)(void
 		//Compare the two values at data[i] and data[i+1]
 		retval = ((*comp)(data1, data2));
 		
+		//Swap the two values
+		memcpy(tempdata, data2, data_size);
+		memcpy(data2, data1, data_size);
+		memcpy(data1, tempdata, data_size);
+		
 		//Must change the format symbols manually here for a and b!
 		printf("a:%lf, b:%lf, comp:%d\n\n", *(DATA_TYPE*)data1, *(DATA_TYPE*)data2, retval);
 	}
+	
+	free(tempdata);
 }
 
 int main()

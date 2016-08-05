@@ -1,9 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define FILENAME 	"data.txt"			//Filename of the target data file
 
-typedef double DATA_TYPE;					//Change the data type for the values held in the database here
+typedef double DATA_TYPE;				//Change the data type for the values held in the database here
+
+int compfunc(DATA_TYPE *a, DATA_TYPE *b)
+{
+	DATA_TYPE deref_a = *a;
+	DATA_TYPE deref_b = *b;
+	
+	//printf("COMPFUNC. A:%f, B:%f\n", deref_a, deref_b);
+	
+	if(deref_a < deref_b) 
+		return -1;
+	else if(deref_a > deref_b) 
+		return 1;
+	else 
+		return 0;
+}
 
 /*Get the file size*/
 size_t getFileSize(FILE *fp)
@@ -18,62 +34,102 @@ size_t getFileSize(FILE *fp)
 	return filesize;
 }
 
-// Function to Merge Arrays L and R into A. 
-// lefCount = number of elements in L
-// rightCount = number of elements in R. 
+/*	
+	Function to Merge Arrays L and R into A. 
+	lefCount = number of elements in L
+	rightCount = number of elements in R. 
+*/
 
-void Merge(DATA_TYPE *A, DATA_TYPE *L, int leftCount, DATA_TYPE *R, int rightCount) 
+void Merge(void *data, void *L, int leftCount, void *R, int rightCount, size_t data_size, int (*comp)(void *, void *)) 
 {
 	int i,j,k;
+	void *data1, *data2;
 
 	// i - to mark the index of left aubarray (L)
 	// j - to mark the index of right sub-raay (R)
 	// k - to mark the index of merged subarray (A)
 	i = 0; j = 0; k =0;
 
-	while(i<leftCount && j< rightCount) {
-		if(L[i]  < R[j]) 
-			A[k++] = L[i++];
+	while(i<leftCount && j< rightCount) 
+	{
+		data1 = L + (data_size * i);			//data1 = L[i]
+		data2 = R + (data_size * j);			//data2 = R[j]
+		
+		//if(L[i]  < R[j]) 
+		if( ((*comp)(data1, data2)) == -1)
+		{
+			//data[k++] = L[i++]
+			data1 = data + (data_size * k++);	//data1 = &data[k++] 
+			data2 = L + (data_size * i++);		//data2 = &L[i++]
+		}
 		else 
-			A[k++] = R[j++];
+		{
+			//data[k++] = R[j++]
+			data1 = data + (data_size * k++);	//data1 = &data[k++] 
+			data2 = R + (data_size * j++);		//data2 = &R[j++];
+		}
+		memcpy(data1, data2, data_size);
 	}
 
 	while(i < leftCount) 
-		A[k++] = L[i++];
+	{
+		//data[k++] = L[i++]
+		data1 = data + (data_size * k++);		//data1 = &data[k++] 
+		data2 = L + (data_size * i++);			//data2 = &L[i++]
+		memcpy(data1, data2, data_size);
+	}
+		
 	
 	while(j < rightCount) 
-		A[k++] = R[j++];
+	{
+		//data[k++] = R[j++]
+		data1 = data + (data_size * k++);		//data1 = &data[k++] 
+		data2 = R + (data_size * j++);			//data2 = &R[j++];
+		memcpy(data1, data2, data_size);
+	}
+		
 }
 
-// Recursive function to sort an array of integers. 
-void MergeSort(DATA_TYPE *A, int n) 
+/*
+	Sort an array of any data type using recursive MergeSort.
+	
+	data 		= pointer to the data array to be sorted
+	n 			= number of elements in the data array
+	data_size 	= size of the data's type in bytes
+	comp 		= pointer to a function that compares two data items.
+					The function must return -1 if a < b; 0 if a = b; 1 if a > b
+*/
+void MergeSort(void *data, int n, size_t data_size, int (*comp)(void *, void *)) 
 {
 	int mid, i;
-	DATA_TYPE *L, *R;
+	void *L, *R;
+	void *data1, *data2;
 	
 	if(n < 2) 
 		return; // base condition. If the array has less than two element, do nothing. 
 
 	mid = n/2;  // find the mid index. 
 
-	
 	//create left and right subarrays
 	//mid elements (from index 0 till mid-1) should be part of left sub-array 
 	//and (n-mid) elements (from mid to n-1) will be part of right sub-array
-	L = (DATA_TYPE*) malloc (mid*sizeof(DATA_TYPE)); 
-	R = (DATA_TYPE*) malloc ((n- mid)*sizeof(DATA_TYPE)); 
+	L = (void *) malloc(mid * data_size); 
+	R = (void *) malloc((n-mid) * data_size); 
 	
 	//creating left subarray
-	for(i=0; i<mid; i++) 
-		L[i] = A[i]; 
-	
+	memcpy(L, data, data_size * mid);
+
 	//creating right subarray
-	for(i = mid;i<n;i++) 
-		R[i-mid] = A[i]; 
+	memcpy(R, (data + data_size * mid), data_size * (n-mid));
 	
-	MergeSort(L,mid);  			//sorting the left subarray
-	MergeSort(R,n-mid);  		//sorting the right subarray
-	Merge(A,L,mid,R,n-mid);  	//Merging L and R into A as sorted list.
+	//sorting the left subarray
+	MergeSort(L, mid, data_size, (*comp)); 
+	
+	//sorting the right subarray
+	MergeSort(R, n-mid, data_size, (*comp));  	
+
+	//Merging L and R into A as sorted list.
+	Merge(data, L, mid, R, n-mid, data_size, (*comp));  	
     free(L);
     free(R);
 }
@@ -113,10 +169,12 @@ int main() {
 	printf("Read in %d elements from the data file %s\n", elements, FILENAME);
 	
 	/*for(i = 0; i < elements; i++)
-		printf("%f\n", data[i]);*/
+		printf("%f\n", data[i]);
+	
+	printf("\n");*/
 		
 	// Calling merge sort to sort the array. 
-	MergeSort(data, elements);
+	MergeSort(data, elements, sizeof(DATA_TYPE), compfunc);
 
 	//printing all elements in the array once its sorted.
 	for(i = 0; i<elements; i++) 
