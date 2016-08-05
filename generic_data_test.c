@@ -1,3 +1,4 @@
+/*Just playing around with void data types*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>

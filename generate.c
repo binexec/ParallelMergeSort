@@ -1,3 +1,5 @@
+/*Generates a random data set to test sorting*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <float.h>
