@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define FILENAME 	"data.big.txt"			//Filename of the target data file
+#define FILENAME 	"data.txt"			//Filename of the target data file
 
 typedef double DATA_TYPE;					//Change the data type for the values held in the database here
 
@@ -32,11 +32,17 @@ void Merge(DATA_TYPE *A, DATA_TYPE *L, int leftCount, DATA_TYPE *R, int rightCou
 	i = 0; j = 0; k =0;
 
 	while(i<leftCount && j< rightCount) {
-		if(L[i]  < R[j]) A[k++] = L[i++];
-		else A[k++] = R[j++];
+		if(L[i]  < R[j]) 
+			A[k++] = L[i++];
+		else 
+			A[k++] = R[j++];
 	}
-	while(i < leftCount) A[k++] = L[i++];
-	while(j < rightCount) A[k++] = R[j++];
+
+	while(i < leftCount) 
+		A[k++] = L[i++];
+	
+	while(j < rightCount) 
+		A[k++] = R[j++];
 }
 
 // Recursive function to sort an array of integers. 
@@ -50,9 +56,10 @@ void MergeSort(DATA_TYPE *A, int n)
 
 	mid = n/2;  // find the mid index. 
 
-	// create left and right subarrays
-	// mid elements (from index 0 till mid-1) should be part of left sub-array 
-	// and (n-mid) elements (from mid to n-1) will be part of right sub-array
+	
+	//create left and right subarrays
+	//mid elements (from index 0 till mid-1) should be part of left sub-array 
+	//and (n-mid) elements (from mid to n-1) will be part of right sub-array
 	L = (DATA_TYPE*) malloc (mid*sizeof(DATA_TYPE)); 
 	R = (DATA_TYPE*) malloc ((n- mid)*sizeof(DATA_TYPE)); 
 	
@@ -63,10 +70,10 @@ void MergeSort(DATA_TYPE *A, int n)
 	//creating right subarray
 	for(i = mid;i<n;i++) 
 		R[i-mid] = A[i]; 
-
-	MergeSort(L,mid);  // sorting the left subarray
-	MergeSort(R,n-mid);  // sorting the right subarray
-	Merge(A,L,mid,R,n-mid);  // Merging L and R into A as sorted list.
+	
+	MergeSort(L,mid);  			//sorting the left subarray
+	MergeSort(R,n-mid);  		//sorting the right subarray
+	Merge(A,L,mid,R,n-mid);  	//Merging L and R into A as sorted list.
     free(L);
     free(R);
 }
@@ -82,6 +89,12 @@ int main() {
 	
 	//Open up the data file
 	infile = fopen(FILENAME, "r");
+	if(infile == NULL)
+	{
+		perror("Failed to open data file");
+		return -1;
+	}
+	
 	filesize = getFileSize(infile);
 	
 	/*Get the size of the input file, and allocate the data buffer based on this size.
