@@ -13,7 +13,13 @@
 	comp 		= pointer to a function that compares two data items. 
 				  The function must return -1 if a < b; 0 if a = b; 1 if a > b
 */
-
 void MergeSort(void *data, int n, size_t data_size, int (*comp)(void *, void *));
+
+/*	Function to Merge Arrays L and R into A. 
+
+	left_n = number of elements in L
+	right_n = number of elements in R. 
+*/
+void Merge(void *data, void *L, int left_n, void *R, int right_n, size_t data_size, int (*comp)(void *, void *));
 
 #endif

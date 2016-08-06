@@ -15,8 +15,8 @@ void Merge(void *data, void *L, int left_n, void *R, int right_n, size_t data_si
 
 	while(i < left_n && j < right_n) 
 	{
-		data1 = L + (data_size * i);			//data1 = L[i]
-		data2 = R + (data_size * j);			//data2 = R[j]
+		data1 = L + (data_size * i);			//data1 = &L[i]
+		data2 = R + (data_size * j);			//data2 = &R[j]
 		
 		if( ((*comp)(data1, data2)) == -1)		//if(L[i]  < R[j]) 
 		{
@@ -87,6 +87,7 @@ void MergeSort(void *data, int n, size_t data_size, int (*comp)(void *, void *))
 
 	//Merging L and R into A as sorted list.
 	Merge(data, L, mid, R, n-mid, data_size, (*comp));  	
-    free(L);
-    free(R);
+	
+	free(L);
+	free(R);
 }

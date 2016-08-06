@@ -1,4 +1,4 @@
-/*Main entry point to test mergesort*/
+/*Main entry point to test SERIAL mergesort*/
 #include "mergesort.h"
 
 #define FILENAME 	"data.txt"			//Filename of the target data file
@@ -59,6 +59,7 @@ int main() {
 	/*Read the data file into the buffer until we hit end of the file*/
 	for(elements = 0, retval = 1; retval > 0; elements++)
 		retval = fscanf(infile, "%lf\n", &data[elements]);		//NOTE: Change the format identifier here if DATA_TYPE has changed!
+	fclose(infile);
 	
 	/*Trim the unused memory out of the data buffer.
 	The last element is also removed since the previous file reading method adds an extra zero element*/

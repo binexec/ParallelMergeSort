@@ -2,10 +2,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <float.h>
 
-#define ELEMENTS 	10000000				//How many elements to generate in the target data file
-#define FILENAME 	"data.txt"				//Filename of the target data file
+#define ELEMENTS 	100				//How many elements to generate in the target data file
+#define FILENAME 	"data.100.txt"				//Filename of the target data file
 
 //typedef DATA_TYPE double; 
 
