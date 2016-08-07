@@ -5,17 +5,16 @@
 #include "mergesort.h"
 
 #define FILENAME 	"data.txt"			//Filename of the target data file
-#define OUTPUT_PATH	"/home/bowenliu/csc462/"
+
+typedef struct{
+	enum {NONE = 0, SEND, RECV} op;		//Should the node send data, receive data, or do nothing?
+	int elements;						//# of elements to receive or send for this operation
+	int target;							//The node to send/receive from
+	int completed;						//Does node 1 have a completed merged list?
+} MergeInstr;
 
 typedef double DATA_TYPE;				//Change the data type for the values held in the database here
 #define MPI_DATA_TYPE MPI_DOUBLE		//MPI data type must be equivalent to DATA_TYPE. A custom MPI data type might be needed.
-
-typedef struct{
-	enum {NONE = 0, SEND, RECV} op;
-	int elements;	//# of elements to receive or send for this operation
-	int target;
-	int completed;
-} MergeInstr;
 
 int compfunc(DATA_TYPE *a, DATA_TYPE *b)
 {
@@ -45,18 +44,8 @@ int checkSorted(DATA_TYPE *data, int n)
 			break;
 		}
 	}
-
 	printf("The array %s sorted!\n", sorted? "is":"is NOT");
 	return sorted;
-}
-
-void arrayCopy(int *dest, int *src, int n)
-{
-	int i;	
-	for(i=0; i<n; i++)
-	{
-		dest[i] = src[i];
-	}
 }
 
 /*Get the file size*/
@@ -100,27 +89,27 @@ DATA_TYPE* generateData(int n)
 }
 
 //Calculates the count and displacement used by mpi_scatterv
-void calcCountDisp(int *send_count, int *send_disp, int p, int elements)
+void calcCountDisp(int *node_status, int *node_disp, int p, int elements)
 {
 		int i, j;
 		int elements_per_node = elements/p;
 		
 		if(elements < p)
 		{
-			memset(send_disp, 0, sizeof(int)*p);	//Set all send_disp[i] = 0
-			memset(send_count, 0, sizeof(int)*p);	//Set all send_count[i] = 0
-			send_count[0] = elements;
+			memset(node_disp, 0, sizeof(int)*p);	//Set all node_disp[i] = 0
+			memset(node_status, 0, sizeof(int)*p);	//Set all node_status[i] = 0
+			node_status[0] = elements;
 			return;
 		}
 		
 		for(i=0; i<p; i++)
 		{
 			if(i == p-1)
-				send_count[i] = elements - i*elements_per_node;
+				node_status[i] = elements - i*elements_per_node;
 			else
-				send_count[i] = elements_per_node;
+				node_status[i] = elements_per_node;
 			
-			send_disp[i] = i*elements_per_node;
+			node_disp[i] = i*elements_per_node;
 		}
 }
 
@@ -290,15 +279,13 @@ MergeInstr planMerge(int *status, int id, int p)
 	return instr;
 }
 
-int main(int argc, char *argv[]) 
+void masterProcess(int id, int p)
 {
-	//MPI related variables
-	int id, p;					//Rank of the current process, and total number of processes
-	int *send_count;
-	int *send_disp;
-	int *merge_status;
-	MergeInstr instr;
-	MPI_Status recv_status;
+	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
+	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
+	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
+	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from
+	MPI_Status recv_status;		
 	
 	//Data variable for master node
 	FILE *infile;
@@ -308,219 +295,231 @@ int main(int argc, char *argv[])
 	int elements;
 	int filesize;
 	int i,j, retval;
-	DATA_TYPE *data; 
+	DATA_TYPE *data, *tdata1, *tdata2; 
 	
-	//Debug variables
-	FILE *dbgfp;
-	char dbgfilename[10];
+	//Other initializations
+	node_status = (int*) malloc(sizeof(int)*p);
+	node_disp = (int*) malloc(sizeof(int)*p);
+	merge_status = (int*) malloc(sizeof(int)*p);
+	
+	
+	/*
+	//Open up the data file
+	infile = fopen(FILENAME, "r");
+	if(infile == NULL)
+	{
+		perror("Failed to open data file");
+		return -1;
+	}
+	
+	filesize = getFileSize(infile);
+	
+	//Get the size of the input file, and allocate the data buffer based on this size.
+	//The resulting buffer will be a bit bigger than needed, but that's okay for now.
+	all_data = (DATA_TYPE*) malloc(filesize);
+	
+	//Read the data file into the buffer until we hit end of the file
+	for(elements = 0, retval = 1; retval > 0; elements++)
+		retval = fscanf(infile, "%lf\n", &all_data[elements]);		//NOTE: Change the format identifier here if DATA_TYPE has changed!
+	fclose(infile);
+	
+	//Trim the unused memory out of the data buffer.
+	//The last element is also removed since the previous file reading method adds an extra zero element
+	elements -= 1;
+	all_data = realloc(all_data, sizeof(DATA_TYPE)*elements);
+	
+	printf("Read in %d elements from the data file %s\n", elements, FILENAME);
+	
+	*/
+	
+	/*Since Myth can't access files it seems, we'll temporarily just generate the values*/
+	elements = 10000000;
+	all_data = generateData(elements);
+	
+	printf("\n\n======BEGIN=======\n\n");
+	printf("***Broadcasting Size!***\n");
+	
+	//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
+	MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	
+	//Calculating how many elements each process will be receiving, and its displacement
+	calcCountDisp(node_status, node_disp, p, elements);
+	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * node_status[id]);
+	
+	printf("***Distributing Data!***\n");
+	
+	//Send a chunk of the data file to all nodes
+	MPI_Scatterv(all_data, node_status, node_disp, MPI_DATA_TYPE, data, node_status[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
+	free(all_data);
+	free(node_disp);
+	
+	printf("***Sorting Sublists!***\n");
+	
+	//Calling merge sort to sort the received data portion. 
+	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
+	MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
+	
+	printf("***Phase 2 Merging Begins!***\n");
+	
+	//Beginning merging sublists across nodes
+	memcpy(merge_status, node_status, sizeof(int)*p);
+	
+	instr.completed = 0;
+	i = 0;
+	
+	while(!instr.completed)
+	{
+		printf("***Phase 2 iteration %d***\n", i++);
+		instr = planMerge(merge_status, id, p);
+			//Process 0 will only receive data from other Processes at any iteration
+		if(instr.op == RECV)
+		{
+			//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+			//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
+			
+			tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*node_status[id]);		//Temporary buffer to hold the node's current sorted sublist
+			tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		//Temporary buffer to hold the incoming sorted sublist 
+			memcpy(tdata1, data, (sizeof(DATA_TYPE)*node_status[id]));			//tdata1 = data
+			
+			//Receive the expected data
+			MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
+			
+			//Allocate a bigger chunk of memory for "data" to hold the merged results of tdata1 and tdata2
+			free(data);
+			data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(node_status[id] + instr.elements));	
+			
+			//Merge "tdata1" and "tdata2" together back into "data"
+			Merge(data, tdata1, node_status[id], tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
+			
+			free(tdata1);
+			free(tdata2);
+		}
+		
+		memcpy(node_status, merge_status, sizeof(int)*p);
+		
+		//Wait for every node to complete this iteration 
+		MPI_Barrier(MPI_COMM_WORLD);
+	}
+		
+	checkSorted(data, elements);
+		
+	//printing all elements in the array once its sorted.
+	/*for(i = 0; i<elements; i++) 
+	{
+		printf("%f\n", data[i]);
+	}*/
+	
+	free(data);
+	free(node_status);
+	free(merge_status);
+}
 
+void salveProcess(int id, int p)
+{
+	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
+	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
+	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
+	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from
+	MPI_Status recv_status;		
+	
+	//Data related variables for all nodes
+	int elements;
+	int filesize;
+	int i,j, retval;
+	DATA_TYPE *data, *tdata1, *tdata2; 
+	
+	//Other initializations
+	node_status = (int*) malloc(sizeof(int)*p);
+	node_disp = (int*) malloc(sizeof(int)*p);
+	merge_status = (int*) malloc(sizeof(int)*p);
+	
+	//Wait for node 0 to broadcast the number of elements
+	MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	
+	//Calculate how much data everyone (including myself) will be receiving
+	calcCountDisp(node_status, node_disp, p, elements);				
+	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * node_status[id]);
+	
+	//Receive a chunk of data from master node 0
+	MPI_Scatterv(NULL, node_status, node_disp, MPI_DATA_TYPE, data, node_status[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
+	free(node_disp);
+	
+	//Calling merge sort to sort the received data portion. 
+	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
+	MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their initial sublists
+	
+	//Beginning merging sublists across nodes (phase 2)
+	memcpy(merge_status, node_status, sizeof(int)*p);
+		
+	instr.completed = 0;
+	i = 0;
+	
+	while(!instr.completed)
+	{
+		instr = planMerge(merge_status, id, p);
+		
+		if(instr.op == SEND)
+		{
+			//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+			
+			//Send the data to the expected node and free the data buffer since we won't ever need it again
+			MPI_Send(data, node_status[id], MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD);
+			free(data);	
+		}
+		else if(instr.op == RECV)
+		{
+			//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+			//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
+			
+			tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*node_status[id]);	//Temporary buffer to hold the current data at the node
+			tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		//Temporary buffer to hold the incoming data 
+			memcpy(tdata1, data, (sizeof(DATA_TYPE)*node_status[id]));			//tdata1 = data
+			
+			//Receive the expected data
+			MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
+			
+			//Allocate a bigger chunk of memory for "data" to hold the merged results of tdata1 and tdata2
+			free(data);
+			data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(node_status[id] + instr.elements));	
+			
+			//Merge "tdata1" and "tdata2" together back into "data"
+			Merge(data, tdata1, node_status[id], tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
+			
+			free(tdata1);
+			free(tdata2);
+		}
+		memcpy(node_status, merge_status, sizeof(int)*p);
+		
+		//Wait for every node to complete this iteration 
+		MPI_Barrier(MPI_COMM_WORLD);
+	}
+	
+	free(node_status);
+	free(merge_status);
+}
+
+int main(int argc, char *argv[]) 
+{
+	//MPI related variables
+	int id, p;					//Rank of the current process, and total number of processes
+	
 	//Initialize MPI on all processes
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &id);
 	MPI_Comm_size(MPI_COMM_WORLD, &p);
 	
-	//Other Initializations that are done on all processes
-	send_count = (int*) malloc(sizeof(int)*p);
-	send_disp = (int*) malloc(sizeof(int)*p);
-	merge_status = (int*) malloc(sizeof(int)*p);
-	
-	/*sprintf(dbgfilename, "%sout_%d", OUTPUT_PATH, id);
-	dbgfp = fopen(dbgfilename, "w");
-	
-	if(dbgfp == NULL)
-	{
-		printf("Process %d: Could not open output file for writing!\n", id);
-		return -1;
-	}*/
-	
-	MPI_Barrier(MPI_COMM_WORLD);
-	
-	//Let rank 0 be the master process. 
 	if(id == 0)
 	{
+		//Let rank 0 be the master process. 
 		printf("Processes available: %d\n", p);
-
-		/*
-		//Open up the data file
-		infile = fopen(FILENAME, "r");
-		if(infile == NULL)
-		{
-			perror("Failed to open data file");
-			return -1;
-		}
-		
-		filesize = getFileSize(infile);
-		
-		//Get the size of the input file, and allocate the data buffer based on this size.
-		//The resulting buffer will be a bit bigger than needed, but that's okay for now.
-		all_data = (DATA_TYPE*) malloc(filesize);
-		
-		//Read the data file into the buffer until we hit end of the file
-		for(elements = 0, retval = 1; retval > 0; elements++)
-			retval = fscanf(infile, "%lf\n", &all_data[elements]);		//NOTE: Change the format identifier here if DATA_TYPE has changed!
-		fclose(infile);
-		
-		//Trim the unused memory out of the data buffer.
-		//The last element is also removed since the previous file reading method adds an extra zero element
-		elements -= 1;
-		all_data = realloc(all_data, sizeof(DATA_TYPE)*elements);
-		
-		printf("Read in %d elements from the data file %s\n", elements, FILENAME);
-		
-		*/
-		
-		/*Since Myth can't access files it seems, we'll temporarily just generate the values*/
-		elements = 10000000;
-		all_data = generateData(elements);
-		
-		printf("***Broadcasting Sizes!***\n");
-		
-		//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
-		MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		
-		//Calculating how many elements each process will be receiving, and its displacement
-		calcCountDisp(send_count, send_disp, p, elements);
-		data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * send_count[id]);
-		
-		printf("***Distributing Data set!***\n");
-		
-		//Send a chunk of the data file to all nodes
-		MPI_Scatterv(all_data, send_count, send_disp, MPI_DATA_TYPE, data, send_count[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
-		free(all_data);
-		free(send_disp);
-		
-		printf("***Sorting sublists...***\n");
-		
-		//Calling merge sort to sort the received data portion. 
-		MergeSort(data, send_count[id], sizeof(DATA_TYPE), compfunc);
-		MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
-		
-		printf("***Phase 2 Merging Begins!***\n");
-		
-		/*for(i=0; i<send_count[id]; i++)
-			fprintf(dbgfp, "%lf\n", data[i]);
-			//printf("%lf\n", data[i]);
-		fclose(dbgfp);*/
-		
-		//Beginning merging sublists across nodes
-		arrayCopy(merge_status, send_count, p);
-		
-		instr.completed = 0;
-		i = 0;
-		
-		while(!instr.completed)
-		{
-			printf("***Phase 2 iteration %d***\n", i++);
-			instr = planMerge(merge_status, id, p);
-			
-			/*printf("Status of Node 0: ");
-			for(j=0; j<p; j++)
-			{
-				printf("ID:%d,Size:%d; ", j, merge_status[j]);
-			}
-			printf("\n");*/
-			
-			//Process 0 will only receive data from other Processes at any iteration
-			if(instr.op == RECV)
-			{
-				//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
-				
-				data = realloc(data, sizeof(DATA_TYPE)*(send_count[id] + instr.elements));
-				//printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
-				
-				if(data == NULL)
-				{
-					printf("Node %d: Realloc failed!\n", id);
-					return -1;
-				}
-				
-				MPI_Recv(&data[send_count[id]], instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
-				
-				//Merge(data, void *L, int left_n, void *R, int right_n, size_t data_size, int (*comp)(void *, void *));
-				MergeSort(data, (send_count[id] + instr.elements), sizeof(DATA_TYPE), compfunc);	//Replace with MERGE instead!
-			}
-
-			arrayCopy(send_count, merge_status, p);
-			
-			//Wait for every node to complete this iteration 
-			MPI_Barrier(MPI_COMM_WORLD);
-		}
-		
-		checkSorted(data, elements);
-		
-		//printing all elements in the array once its sorted.
-		/*for(i = 0; i<elements; i++) 
-		{
-			printf("%f\n", data[i]);
-		}*/
-		
-		free(data);
+		masterProcess(id, p);
 	}
-	
-	//What to do for all other worker processes
-	else
+	else	
 	{
-		//Wait for node 0 to broadcast the number of elements
-		MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		
-		//Calculate how much data everyone (including myself) will be receiving
-		calcCountDisp(send_count, send_disp, p, elements);				
-		data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * send_count[id]);
-		
-		//Receive a chunk of data from master node 0
-		MPI_Scatterv(all_data, send_count, send_disp, MPI_DATA_TYPE, data, send_count[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
-		free(send_disp);
-		
-		//Calling merge sort to sort the received data portion. 
-		MergeSort(data, send_count[id], sizeof(DATA_TYPE), compfunc);
-		MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
-
-		
-		//Beginning merging sublists across nodes (phase 2)
-		arrayCopy(merge_status, send_count, p);
-		
-		instr.completed = 0;
-		//i = 0;
-		
-		while(!instr.completed)
-		{
-			instr = planMerge(merge_status, id, p);
-			//i++;
-			
-			if(instr.op == SEND)
-			{
-				//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
-				MPI_Send(data, send_count[id], MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD);
-				free(data);
-			}
-			else if(instr.op == RECV)
-			{
-				//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
-				
-				data = realloc(data, sizeof(DATA_TYPE)*(send_count[id] + instr.elements));
-				//printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
-				
-				if(data == NULL)
-				{
-					printf("Node %d: Realloc failed! Wanted %d elements!\n", id, instr.elements);
-					return -1;
-				}
-				
-				MPI_Recv(&data[send_count[id]], instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
-				
-				MergeSort(data, (send_count[id] + instr.elements), sizeof(DATA_TYPE), compfunc);	//Replace with MERGE instead!
-			}
-			
-			arrayCopy(send_count, merge_status, p);
-			
-			//Wait for every node to complete this iteration 
-			MPI_Barrier(MPI_COMM_WORLD);
-		}
+		//Let all other ranks be worker processes
+		salveProcess(id, p);
 	}
-	
-	free(send_count);
-	free(merge_status);
-	
+
 	MPI_Finalize();
 	return 0;
 }
