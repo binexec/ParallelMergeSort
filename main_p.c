@@ -40,7 +40,10 @@ int checkSorted(DATA_TYPE *data, int n)
 	for(i=1; i<n; i++)
 	{
 		if(data[i-1] > data[i])
+		{
+			sorted = 0;
 			break;
+		}
 	}
 
 	printf("The array %s sorted!\n", sorted? "is":"is NOT");
@@ -294,7 +297,6 @@ int main(int argc, char *argv[])
 	int *send_count;
 	int *send_disp;
 	int *merge_status;
-	int freed = 0;
 	MergeInstr instr;
 	MPI_Status recv_status;
 	
@@ -371,11 +373,7 @@ int main(int argc, char *argv[])
 		elements = 10000000;
 		all_data = generateData(elements);
 		
-		/*for(i=0; i<elements; i++)
-			printf("%lf\n", all_data[i]);*/
-		
 		printf("***Broadcasting Sizes!***\n");
-		//fflush(stdout);
 		
 		//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
 		MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -385,7 +383,6 @@ int main(int argc, char *argv[])
 		data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * send_count[id]);
 		
 		printf("***Distributing Data set!***\n");
-		//fflush(stdout);
 		
 		//Send a chunk of the data file to all nodes
 		MPI_Scatterv(all_data, send_count, send_disp, MPI_DATA_TYPE, data, send_count[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
@@ -393,14 +390,12 @@ int main(int argc, char *argv[])
 		free(send_disp);
 		
 		printf("***Sorting sublists...***\n");
-		//fflush(stdout);
 		
 		//Calling merge sort to sort the received data portion. 
 		MergeSort(data, send_count[id], sizeof(DATA_TYPE), compfunc);
 		MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
 		
-		printf("***Phase 2 Merge begins!***\n");
-		//fflush(stdout);
+		printf("***Phase 2 Merging Begins!***\n");
 		
 		/*for(i=0; i<send_count[id]; i++)
 			fprintf(dbgfp, "%lf\n", data[i]);
@@ -415,9 +410,8 @@ int main(int argc, char *argv[])
 		
 		while(!instr.completed)
 		{
+			printf("***Phase 2 iteration %d***\n", i++);
 			instr = planMerge(merge_status, id, p);
-			i++;
-			//printf("Node: %d, Iter: %d, OP: %d, Cursize %d, S/R Amount: %d, Target: %d, Comp: %d\n",id, i-1, instr.op, send_count[id], instr.elements, instr.target, instr.completed);
 			
 			/*printf("Status of Node 0: ");
 			for(j=0; j<p; j++)
@@ -425,38 +419,40 @@ int main(int argc, char *argv[])
 				printf("ID:%d,Size:%d; ", j, merge_status[j]);
 			}
 			printf("\n");*/
-
+			
+			//Process 0 will only receive data from other Processes at any iteration
 			if(instr.op == RECV)
 			{
-				usleep(100);
-				printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
+				//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
 				
 				data = realloc(data, sizeof(DATA_TYPE)*(send_count[id] + instr.elements));
-				printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
-				
+				//printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
 				
 				if(data == NULL)
 				{
-					printf("Node %d: Realloc failed! Wanted %d elements!\n", id, instr.elements);
+					printf("Node %d: Realloc failed!\n", id);
 					return -1;
 				}
 				
 				MPI_Recv(&data[send_count[id]], instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
 				
-				//send_count[id] += instr.elements;
+				//Merge(data, void *L, int left_n, void *R, int right_n, size_t data_size, int (*comp)(void *, void *));
+				MergeSort(data, (send_count[id] + instr.elements), sizeof(DATA_TYPE), compfunc);	//Replace with MERGE instead!
 			}
-			else if(instr.op != RECV)
-			{
-				printf("WARNING: Node 0 received something other than RECV! %d\n", instr.op);
-			}
-			
+
 			arrayCopy(send_count, merge_status, p);
 			
 			//Wait for every node to complete this iteration 
 			MPI_Barrier(MPI_COMM_WORLD);
 		}
-		if(!checkSorted(data, elements))
-			printf("Node 0: NOT sorted!");
+		
+		checkSorted(data, elements);
+		
+		//printing all elements in the array once its sorted.
+		/*for(i = 0; i<elements; i++) 
+		{
+			printf("%f\n", data[i]);
+		}*/
 		
 		free(data);
 	}
@@ -467,74 +463,42 @@ int main(int argc, char *argv[])
 		//Wait for node 0 to broadcast the number of elements
 		MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
 		
-		//printf("Node %d GOT BROADCAST!\n", id);
-		
-		//Calculate how much data I will be receiving
-		calcCountDisp(send_count, send_disp, p, elements);				//is this necessary???
+		//Calculate how much data everyone (including myself) will be receiving
+		calcCountDisp(send_count, send_disp, p, elements);				
 		data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * send_count[id]);
 		
 		//Receive a chunk of data from master node 0
 		MPI_Scatterv(all_data, send_count, send_disp, MPI_DATA_TYPE, data, send_count[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
 		free(send_disp);
 		
-		//printf("Node %d GOT DATA!\n", id);
-		//fflush(stdout);
-		
 		//Calling merge sort to sort the received data portion. 
 		MergeSort(data, send_count[id], sizeof(DATA_TYPE), compfunc);
 		MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
+
 		
-		/*for(i=0; i<send_count[id]; i++)
-			fprintf(dbgfp, "%lf\n", data[i]);
-			//printf("%lf\n", data[i]);
-		fclose(dbgfp);*/
-		
-		
-		//printf("Node %d STARTING PHASE 2!\n", id);
-		//fflush(stdout);
-		
-		//Beginning merging sublists across nodes
+		//Beginning merging sublists across nodes (phase 2)
 		arrayCopy(merge_status, send_count, p);
 		
 		instr.completed = 0;
-		i = 0;
+		//i = 0;
 		
 		while(!instr.completed)
 		{
 			instr = planMerge(merge_status, id, p);
-			i++;
-			//printf("Node: %d, Iter: %d, OP: %d, Cursize %d, S/R Amount: %d, Target: %d, Comp: %d\n",id, i-1, instr.op, send_count[id], instr.elements, instr.target, instr.completed);
+			//i++;
 			
 			if(instr.op == SEND)
 			{
-				if(freed == 1)
-				{
-					printf("CRITICAL ERROR! RECV AFTER SEND!\n");
-					return -1;
-				}
-				
-				usleep(100);
-				printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
-				
+				//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
 				MPI_Send(data, send_count[id], MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD);
-				//send_count[id] = 0;
-				
-				freed = 1;
 				free(data);
 			}
 			else if(instr.op == RECV)
 			{
-				if(freed == 1)
-				{
-					printf("CRITICAL ERROR! RECV AFTER SEND!\n");
-					return -1;
-				}
-				
-				usleep(100);
-				printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
+				//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, send_count[id], instr.elements, merge_status[id], instr.completed);
 				
 				data = realloc(data, sizeof(DATA_TYPE)*(send_count[id] + instr.elements));
-				printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
+				//printf("Node: %d, RECV buffer size: %d\n", id, send_count[id] + instr.elements);
 				
 				if(data == NULL)
 				{
@@ -543,7 +507,8 @@ int main(int argc, char *argv[])
 				}
 				
 				MPI_Recv(&data[send_count[id]], instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
-				//send_count[id] += instr.elements;
+				
+				MergeSort(data, (send_count[id] + instr.elements), sizeof(DATA_TYPE), compfunc);	//Replace with MERGE instead!
 			}
 			
 			arrayCopy(send_count, merge_status, p);
@@ -552,10 +517,6 @@ int main(int argc, char *argv[])
 			MPI_Barrier(MPI_COMM_WORLD);
 		}
 	}
-	
-	//printing all elements in the array once its sorted.
-	/*for(i = 0; i<elements; i++) 
-		printf("%f\n", data[i]);*/
 	
 	free(send_count);
 	free(merge_status);
