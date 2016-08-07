@@ -279,6 +279,36 @@ MergeInstr planMerge(int *status, int id, int p)
 	return instr;
 }
 
+DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
+{
+	//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+	//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
+
+	DATA_TYPE *tdata1;			//Temporary buffer to hold the current data at the node
+	DATA_TYPE *tdata2;			//Temporary buffer to hold the incoming data 
+	MPI_Status recv_status;	
+	
+	tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*n);					
+	tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		
+
+	memcpy(tdata1, data, (sizeof(DATA_TYPE)*n));						//tdata1 = data
+	
+	//Receive the expected data
+	MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
+	
+	//Allocate a bigger chunk of memory for "data" to hold the merged results of tdata1 and tdata2
+	free(data);
+	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(n + instr.elements));	
+	
+	//Merge "tdata1" and "tdata2" together back into "data"
+	Merge(data, tdata1, n, tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
+	
+	free(tdata1);
+	free(tdata2);
+	
+	return data;
+}
+
 void masterProcess(int id, int p)
 {
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
@@ -336,7 +366,7 @@ void masterProcess(int id, int p)
 	elements = 10000000;
 	all_data = generateData(elements);
 	
-	printf("\n\n======BEGIN=======\n\n");
+	printf("\n======BEGIN=======\n\n");
 	printf("***Broadcasting Size!***\n");
 	
 	//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
@@ -357,44 +387,30 @@ void masterProcess(int id, int p)
 	
 	//Calling merge sort to sort the received data portion. 
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
-	MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their sublists
+	MPI_Barrier(MPI_COMM_WORLD);
+	
+	
+	/*****************************************************/
+	/* Beginning merging sublists across nodes (phase 2) */
+	/*****************************************************/
 	
 	printf("***Phase 2 Merging Begins!***\n");
-	
-	//Beginning merging sublists across nodes
-	memcpy(merge_status, node_status, sizeof(int)*p);
-	
+
 	instr.completed = 0;
 	i = 0;
+	
+	memcpy(merge_status, node_status, sizeof(int)*p);
 	
 	while(!instr.completed)
 	{
 		printf("***Phase 2 iteration %d***\n", i++);
 		instr = planMerge(merge_status, id, p);
-			//Process 0 will only receive data from other Processes at any iteration
-		if(instr.op == RECV)
-		{
-			//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i-1, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
-			//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
-			
-			tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*node_status[id]);		//Temporary buffer to hold the node's current sorted sublist
-			tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		//Temporary buffer to hold the incoming sorted sublist 
-			memcpy(tdata1, data, (sizeof(DATA_TYPE)*node_status[id]));			//tdata1 = data
-			
-			//Receive the expected data
-			MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
-			
-			//Allocate a bigger chunk of memory for "data" to hold the merged results of tdata1 and tdata2
-			free(data);
-			data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(node_status[id] + instr.elements));	
-			
-			//Merge "tdata1" and "tdata2" together back into "data"
-			Merge(data, tdata1, node_status[id], tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
-			
-			free(tdata1);
-			free(tdata2);
-		}
 		
+		//Process 0 will only receive data from other Processes at any iteration
+		if(instr.op == RECV)
+			data = recvAndMerge(data, node_status[id], instr);
+		
+		//Update the current node statuses
 		memcpy(node_status, merge_status, sizeof(int)*p);
 		
 		//Wait for every node to complete this iteration 
@@ -419,8 +435,7 @@ void salveProcess(int id, int p)
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
 	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
-	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from
-	MPI_Status recv_status;		
+	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from	
 	
 	//Data related variables for all nodes
 	int elements;
@@ -446,48 +461,34 @@ void salveProcess(int id, int p)
 	
 	//Calling merge sort to sort the received data portion. 
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
-	MPI_Barrier(MPI_COMM_WORLD);		//Wait for everyone to complete sorting their initial sublists
+	MPI_Barrier(MPI_COMM_WORLD);
 	
-	//Beginning merging sublists across nodes (phase 2)
-	memcpy(merge_status, node_status, sizeof(int)*p);
-		
+	/*****************************************************/
+	/* Beginning merging sublists across nodes (phase 2) */
+	/*****************************************************/
+
 	instr.completed = 0;
 	i = 0;
+	
+	memcpy(merge_status, node_status, sizeof(int)*p);
 	
 	while(!instr.completed)
 	{
 		instr = planMerge(merge_status, id, p);
+
+		if(instr.op == RECV)
+			data = recvAndMerge(data, node_status[id], instr);
 		
-		if(instr.op == SEND)
+		//Each slave node will have to send their sorted sublist to another node at some iteration. 
+		//Once send, this node will be idle for the rest of the iterations.
+		else if(instr.op == SEND)
 		{
 			//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
-			
-			//Send the data to the expected node and free the data buffer since we won't ever need it again
 			MPI_Send(data, node_status[id], MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD);
 			free(data);	
 		}
-		else if(instr.op == RECV)
-		{
-			//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
-			//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
-			
-			tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*node_status[id]);	//Temporary buffer to hold the current data at the node
-			tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		//Temporary buffer to hold the incoming data 
-			memcpy(tdata1, data, (sizeof(DATA_TYPE)*node_status[id]));			//tdata1 = data
-			
-			//Receive the expected data
-			MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
-			
-			//Allocate a bigger chunk of memory for "data" to hold the merged results of tdata1 and tdata2
-			free(data);
-			data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(node_status[id] + instr.elements));	
-			
-			//Merge "tdata1" and "tdata2" together back into "data"
-			Merge(data, tdata1, node_status[id], tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
-			
-			free(tdata1);
-			free(tdata2);
-		}
+		
+		//Update the current node statuses
 		memcpy(node_status, merge_status, sizeof(int)*p);
 		
 		//Wait for every node to complete this iteration 
