@@ -2,3 +2,5 @@ a.out
 data.txt
 data.small.txt
 test.c
+removed/generic_data_test.c
+removed/main_s.c
