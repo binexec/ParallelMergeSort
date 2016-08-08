@@ -510,7 +510,7 @@ double masterProcess(int id, ParsedArgs args)
 	return elapsed_time;
 }
 
-void salveProcess(int id)
+void slaveProcess(int id)
 {
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
@@ -612,7 +612,7 @@ int main(int argc, char *argv[])
 	else	
 	{
 		//Start the Mergesort Slave
-		salveProcess(id);
+		slaveProcess(id);
 	}
 
 	MPI_Finalize();
