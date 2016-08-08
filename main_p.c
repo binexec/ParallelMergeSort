@@ -2,13 +2,14 @@
 #include <stdlib.h>
 #include <mpi.h>
 #include "mergesort.h"
-
 	
 #define DATA_TYPE double				//Change the data type for the values held in the database here
 #define MPI_DATA_TYPE MPI_DOUBLE		//MPI data type must be equivalent to DATA_TYPE. A custom MPI data type might be needed.
 
-
-int compfunc(DATA_TYPE *a, DATA_TYPE *b)
+/*
+USER SPECIFIED FUNCTION compFunc
+*/
+int compFunc(DATA_TYPE *a, DATA_TYPE *b)
 {
 	DATA_TYPE deref_a = *a;
 	DATA_TYPE deref_b = *b;
@@ -21,6 +22,9 @@ int compfunc(DATA_TYPE *a, DATA_TYPE *b)
 		return 0;
 }
 
+/*
+USER SPECIFIED FUNCTION readDataFromFile
+*/
 DATA_TYPE* readDataFromFile(char *filename, int *elements_read)
 {
 	FILE *infile;
@@ -65,18 +69,42 @@ DATA_TYPE* readDataFromFile(char *filename, int *elements_read)
 }
 
 /*
+USER SPECIFIED FUNCTION writeDataToFile
+*/
+void writeDataToFile(DATA_TYPE *data, int n, char *filename)
+{
+	int i;
+	FILE *outfile;
+	
+	outfile = fopen(filename, "w");
+	if(outfile == NULL)
+	{
+		perror("writeDataToFile: Failed to create/open output file");
+		return;
+	}
+	
+	printf("Outputting %d sorted elements to file %s\n", n, filename);
+	for(i=0; i<n; i++) 
+		fprintf(outfile, "%f\n", data[i]);
+	
+	fclose(outfile);
+}
+
+/*
 Do not edit anything below this point unless you know what you're doing!
 */
 
 /*Global definitions and variables*/
+#define MIN_ARGS 3
 #define NO_OUTPUT_ARG "-benchmark"
 #define NO_VERIFY_ARG "-noverify"
 
-int p;		//total number of processes
+int p;						//total number of processes
 
 //Struct containing the interpreted input arguments for the main master process
 typedef struct{
 	DATA_TYPE *data;		//Pointer to the data that was read in from the input file
+	char *outfile;			//Output filename
 	int elements;			//How many elements are in data?
 	int output_enabled;		//Do we output the results once sorted?
 	int no_verify;			//Skip the verification step after sorting?
@@ -93,47 +121,51 @@ typedef struct{
 ParsedArgs parseArgs(int argc, char *argv[])
 {
 	int i;
-	ParsedArgs parsed_args;
+	ParsedArgs pargs;
 
 	//Default values for args to be returned
-	parsed_args.output_enabled = 1; 
-	parsed_args.no_verify = 0;
+	pargs.output_enabled = 1; 
+	pargs.no_verify = 0;
 	
-	//If there are exactly 2 args, the user simply just want to sort a file
-	if(argc == 2)
-	{
-		//Read in data from the specified file using argument 2
-		parsed_args.data = readDataFromFile(argv[1], &parsed_args.elements);
-	}
+	//Treat the argument 1 and 2 as input and output filenames
+	printf("Input file: \"%s\"\n", argv[1]);
+	printf("Output file: \"%s\"\n", argv[2]);
 	
-	//If there are more than 2 args, the user has specified at least one additional parameter
-	else
+	//Parse additional arguments specified by the user
+	if(argc > MIN_ARGS)
 	{
 		//Treat arguments 2 to n-2 as all possible parameters and scan through them
-		for(i=1; i<argc-1; i++)
+		for(i=MIN_ARGS; i<argc; i++)
 		{
 			if(strncmp(argv[i], NO_OUTPUT_ARG, strlen(NO_OUTPUT_ARG)) == 0)
-				parsed_args.output_enabled = 0; 
+			{
+				pargs.output_enabled = 0; 
+				printf("Found \"%s\" argument; output disabled\n", NO_OUTPUT_ARG);
+			}
 			
 			else if(strncmp(argv[i], NO_VERIFY_ARG, strlen(NO_VERIFY_ARG)) == 0)
-				parsed_args.no_verify = 1; 
+			{
+				pargs.no_verify = 1; 
+				printf("Found \"%s\" argument; sorting verification disabled\n", NO_VERIFY_ARG);
+			}
 			
 			else
 				printf("Ignored unknown parameter \"%s\"\n", argv[i]);
 		}
-
-		//Treat the argument n-1 as the filename, and read in data from the specified file
-		parsed_args.data = readDataFromFile(argv[argc-1], &parsed_args.elements);
 	}
 	
+	//Read data from the input file, and set the output file
+	pargs.data = readDataFromFile(argv[1], &pargs.elements);	
+	pargs.outfile = argv[2];
+
 	//Check if the file read was sucessful
-	if(parsed_args.data == NULL)
+	if(pargs.data == NULL)
 	{
 			printf("readDataFromFile returned a NULL pointer!");
 			MPI_Abort(MPI_COMM_WORLD, -1);
 	}
 	
-	return parsed_args;
+	return pargs;
 }
 
 //Calculates the count and displacement used by mpi_scatterv
@@ -349,7 +381,7 @@ DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*(n + instr.elements));	
 	
 	//Merge "tdata1" and "tdata2" together back into "data"
-	Merge(data, tdata1, n, tdata2, instr.elements, sizeof(DATA_TYPE), compfunc);
+	Merge(data, tdata1, n, tdata2, instr.elements, sizeof(DATA_TYPE), compFunc);
 	
 	free(tdata1);
 	free(tdata2);
@@ -374,20 +406,6 @@ int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 	return sorted;
 }
 
-//STUB FOR NOW
-void outputResult(DATA_TYPE *data, int n)
-{
-	//int i;
-	
-	//printing all elements in the array once its sorted.
-	/*for(i = 0; i<elements; i++) 
-	{
-		printf("%f\n", data[i]);
-	}*/
-	
-	printf("Output result stub is called!\n");
-}
-
 double masterProcess(int id, ParsedArgs args)
 {
 	double elapsed_time;
@@ -396,6 +414,7 @@ double masterProcess(int id, ParsedArgs args)
 	int output_enabled = args.output_enabled;	//If we're running a benchmark, don't output the result
 	int elements = args.elements;				//How many elements are in the expected data set
 	int no_verify = args.no_verify;				//Skip verification after sorting completes?
+	char *outfile = args.outfile;				//Filename of the output file
 	DATA_TYPE *all_data = args.data; 			//The master's initial data buffer to hold generated data or data read from file
 	
 	//Variables related to send and receiving data
@@ -423,18 +442,18 @@ double masterProcess(int id, ParsedArgs args)
 	if(p == 1)
 	{
 		printf("NOTE: Only 1 process found. Running a serial version of Mergesort instead\n");
-		MergeSort(all_data, elements, sizeof(DATA_TYPE), compfunc);
+		MergeSort(all_data, elements, sizeof(DATA_TYPE), compFunc);
 
 		//Stop recording the sorting time
 		elapsed_time += MPI_Wtime();			
 
 		//Verify the data is indeed sorted
 		if(!no_verify)
-			checkSorted(all_data, elements, compfunc);
+			checkSorted(all_data, elements, compFunc);
 		
 		//Outputs the results if needed
 		if(output_enabled)
-				outputResult(all_data, elements);
+				writeDataToFile(all_data, elements, outfile);
 		
 		//Cleanup and exit
 		free(all_data);
@@ -463,7 +482,7 @@ double masterProcess(int id, ParsedArgs args)
 	
 	//Calling mergesort to sort the received data portion. 
 	printf("***Sorting Sublists!***\n");
-	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
+	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compFunc);
 	MPI_Barrier(MPI_COMM_WORLD);
 	
 	/*****************************************************/
@@ -496,11 +515,11 @@ double masterProcess(int id, ParsedArgs args)
 
 	//Verify the data is indeed sorted
 	if(!no_verify)
-		checkSorted(data, elements, compfunc);
+		checkSorted(data, elements, compFunc);
 	
 	//Outputs the results if needed
 	if(output_enabled)
-			outputResult(data, elements);
+			writeDataToFile(data, elements, outfile);
 	
 	free(data);
 	free(node_status);
@@ -538,7 +557,7 @@ void slaveProcess(int id)
 	free(node_disp);
 	
 	//Calling mergesort to sort the received sublist. 
-	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
+	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compFunc);
 	MPI_Barrier(MPI_COMM_WORLD);
 	
 	/*****************************************************/
@@ -582,11 +601,11 @@ int main(int argc, char *argv[])
 	double elapsed_time;		//Records how long the calculation took
 	ParsedArgs parsed_args;		//Interpreted input arguments for the main process
 	
-	if(argc < 2)
+	if(argc < MIN_ARGS)
 	{
 		printf("Insufficient arguments!\n");
-		printf("Usage: psort <optional parameter> filename\n");
-		printf("Implemented parameter: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
+		printf("Usage: psort infile outfile <optional parameters> \n");
+		printf("Optional parameters: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
 		return 0;
 	}
 	

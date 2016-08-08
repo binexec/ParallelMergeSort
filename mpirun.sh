@@ -1,2 +1,2 @@
 #!/bin/sh
-mpirun -np 32 /home/bowenliu/csc462/ms -benchmark /home/bowenliu/csc462/data.txt
+mpirun -np 32 /home/bowenliu/csc462/ms /home/bowenliu/csc462/data.txt /home/bowenliu/csc462/data.out -benchmark
