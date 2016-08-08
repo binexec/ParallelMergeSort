@@ -3,8 +3,7 @@
 #include <mpi.h>
 #include "mergesort.h"
 
-// #define NO_VERIFY					//Uncomment if you do NOT wish the program to verify if the final data is sorted
-			
+	
 #define DATA_TYPE double				//Change the data type for the values held in the database here
 #define MPI_DATA_TYPE MPI_DOUBLE		//MPI data type must be equivalent to DATA_TYPE. A custom MPI data type might be needed.
 
@@ -73,14 +72,16 @@ Do not edit anything below this point unless you know what you're doing!
 
 /*Global definitions and variables*/
 #define NO_OUTPUT_ARG "-benchmark"
+#define NO_VERIFY_ARG "-noverify"
 
 int p;		//total number of processes
 
-//Struct holding the interpreted input arguments for the main master process
+//Struct containing the interpreted input arguments for the main master process
 typedef struct{
 	DATA_TYPE *data;		//Pointer to the data that was read in from the input file
 	int elements;			//How many elements are in data?
 	int output_enabled;		//Do we output the results once sorted?
+	int no_verify;			//Skip the verification step after sorting?
 }ParsedArgs;
 
 //A struct of arguments instructing a node where to send/receive data during phase 2 merge
@@ -93,27 +94,37 @@ typedef struct{
 
 ParsedArgs parseArgs(int argc, char *argv[])
 {
+	int i;
 	ParsedArgs parsed_args;
 
 	//Default values for args to be returned
 	parsed_args.output_enabled = 1; 
+	parsed_args.no_verify = 0;
 	
 	//If there are more than 2 args, the user simply just want to sort a file
 	if(argc == 2)
 	{
-		//Read in data from the specified file
+		//Read in data from the specified file using argument 2
 		parsed_args.data = readDataFromFile(argv[1], &parsed_args.elements);
 	}
 	
 	//If there are more than 2 args, the user has specified an option
 	else
 	{
-		if(strncmp(argv[1], NO_OUTPUT_ARG, strlen(NO_OUTPUT_ARG)) == 0)
-			parsed_args.output_enabled = 0; 
-		else
-			printf("Ignored unknown option \"%s\"\n", argv[1]);
-		
-		//Read in data from the specified file
+		//Treat arguments 1 to n-2 as all options
+		for(i=1; i<argc-1; i++)
+		{
+			if(strncmp(argv[i], NO_OUTPUT_ARG, strlen(NO_OUTPUT_ARG)) == 0)
+				parsed_args.output_enabled = 0; 
+			
+			else if(strncmp(argv[i], NO_VERIFY_ARG, strlen(NO_VERIFY_ARG)) == 0)
+				parsed_args.no_verify = 1; 
+			
+			else
+				printf("Ignored unknown option \"%s\"\n", argv[i]);
+		}
+
+		//Treat the argument n-1 as the filename, and read in data from the specified file
 		parsed_args.data = readDataFromFile(argv[argc-1], &parsed_args.elements);
 	}
 	
@@ -348,7 +359,6 @@ DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 	return data;
 }
 
-#ifndef NO_VERIFY
 int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 {
 	int i;
@@ -362,10 +372,9 @@ int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 			break;
 		}
 	}
-	printf("The array %s sorted!\n", sorted? "is":"is NOT");
+	printf("VERIFICATION: The array %s sorted!\n", sorted? "is":"is NOT");
 	return sorted;
 }
-#endif
 
 //STUB FOR NOW
 void outputResult(DATA_TYPE *data, int n)
@@ -388,6 +397,7 @@ double masterProcess(int id, ParsedArgs args)
 	//Needed by master node only
 	int output_enabled = args.output_enabled;	//If we're running a benchmark, don't output the result
 	int elements = args.elements;				//How many elements are in the expected data set
+	int no_verify = args.no_verify;				//Skip verification after sorting completes?
 	DATA_TYPE *all_data = args.data; 			//The master's initial data buffer to hold generated data or data read from file
 	
 	//Variables related to send and receiving data
@@ -420,10 +430,9 @@ double masterProcess(int id, ParsedArgs args)
 		//Stop recording the sorting time
 		elapsed_time += MPI_Wtime();			
 
-		#ifndef NO_VERIFY
 		//Verify the data is indeed sorted
-		checkSorted(all_data, elements, compfunc);
-		#endif
+		if(!no_verify)
+			checkSorted(all_data, elements, compfunc);
 		
 		//Outputs the results if needed
 		if(output_enabled)
@@ -487,14 +496,13 @@ double masterProcess(int id, ParsedArgs args)
 	//Stop recording the sorting time
 	elapsed_time += MPI_Wtime();			
 
-	#ifndef NO_VERIFY
 	//Verify the data is indeed sorted
-	checkSorted(data, elements, compfunc);
-	#endif
+	if(!no_verify)
+		checkSorted(data, elements, compfunc);
 	
 	//Outputs the results if needed
 	if(output_enabled)
-			outputResult(all_data, elements);
+			outputResult(data, elements);
 	
 	free(data);
 	free(node_status);
@@ -578,8 +586,8 @@ int main(int argc, char *argv[])
 	if(argc < 2)
 	{
 		printf("Insufficient arguments!\n");
-		printf("usage: psort <optional args> filename\n");
-		printf("Currently, the only optional arg implemented is %s \n", NO_OUTPUT_ARG);
+		printf("Usage: psort <optional args> filename\n");
+		printf("Implemented optional args: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
 		return 0;
 	}
 	
