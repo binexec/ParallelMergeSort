@@ -4,8 +4,8 @@
 #include "mergesort.h"
 
 // #define NO_VERIFY					//Uncomment if you do NOT wish the program to verify if the final data is sorted
-
-typedef double DATA_TYPE;				//Change the data type for the values held in the database here
+			
+#define DATA_TYPE double				//Change the data type for the values held in the database here
 #define MPI_DATA_TYPE MPI_DOUBLE		//MPI data type must be equivalent to DATA_TYPE. A custom MPI data type might be needed.
 
 
@@ -72,9 +72,16 @@ Do not edit anything below this point unless you know what you're doing!
 */
 
 /*Global definitions and variables*/
-#define BENCHMARK_STRING	"PSORT_INTERNAL_BENCHMARK"
+#define NO_OUTPUT_ARG "-benchmark"
 
 int p;		//total number of processes
+
+//Struct holding the interpreted input arguments for the main master process
+typedef struct{
+	DATA_TYPE *data;		//Pointer to the data that was read in from the input file
+	int elements;			//How many elements are in data?
+	int output_enabled;		//Do we output the results once sorted?
+}ParsedArgs;
 
 //A struct of arguments instructing a node where to send/receive data during phase 2 merge
 typedef struct{
@@ -84,75 +91,40 @@ typedef struct{
 	int completed;						//Does node 1 have a completed merged list?
 } MergeInstr;
 
-//Generate a data set of size n of DATA_TYPE for testing
-DATA_TYPE* generateData(int n)
+ParsedArgs parseArgs(int argc, char *argv[])
 {
-	int i;
-	double newval, scale;
-	DATA_TYPE *data;
-	
-	//Create a buffer to hold the generated data
-	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*n);
-	
-	//Seed the random number generator using current time
-	srand((unsigned)time(NULL));
-	
-	//Start generating!
-	for(i=0; i<n; i++)
-	{
-		//generate a random float
-		scale = (double)rand();
-		newval = ((double)rand() / (double)RAND_MAX) * scale;
-		
-		data[i] = newval;
-	}
-	
-	printf("Generated %d elements\n", n);
-	return data;
-}
+	ParsedArgs parsed_args;
 
-DATA_TYPE* parseArgs(char *argv[], int *elements, int *output_enabled)
-{
-	DATA_TYPE *all_data;
+	//Default values for args to be returned
+	parsed_args.output_enabled = 1; 
 	
-	//Generate a random data set of doubles if the user want to simply run a serial vs parallel benchmark
-	if(strcmp(argv[1], BENCHMARK_STRING) == 0)
+	//If there are more than 2 args, the user simply just want to sort a file
+	if(argc == 2)
 	{
-		printf("***Benchmark Mode Initiated***\n");
-		*elements = atoi(argv[2]);
-		*output_enabled = 0; 
-		
-		if(*elements < p)
-		{
-			printf("ERROR: Too little elements (argument n) specified for benchmarking.", *elements);
-			printf("The minimum required is the same as number of processes (%d), but got %d\n", p, *elements);
-			MPI_Abort(MPI_COMM_WORLD, -1);
-			return NULL;
-		}
-			
-		all_data = generateData(*elements);
-		if(all_data == NULL)
-		{
-			printf("Failed to generate a data set of %d elements for benchmarking!", *elements);
-			MPI_Abort(MPI_COMM_WORLD, -1);
-			return NULL;
-		}
+		//Read in data from the specified file
+		parsed_args.data = readDataFromFile(argv[1], &parsed_args.elements);
 	}
 	
-	//If the user want to perform some actual sorting, read in the data from the specified filename
+	//If there are more than 2 args, the user has specified an option
 	else
 	{
-		*output_enabled = 1; 
-		all_data = readDataFromFile(argv[1], elements);
-		if(all_data == NULL)
-		{
-			printf("readDataFromFile returned a NULL pointer!");
-			MPI_Abort(MPI_COMM_WORLD, -1);
-			return NULL;
-		}
+		if(strncmp(argv[1], NO_OUTPUT_ARG, strlen(NO_OUTPUT_ARG)) == 0)
+			parsed_args.output_enabled = 0; 
+		else
+			printf("Ignored unknown option \"%s\"\n", argv[1]);
+		
+		//Read in data from the specified file
+		parsed_args.data = readDataFromFile(argv[argc-1], &parsed_args.elements);
 	}
 	
-	return all_data;
+	//Check if the file read was sucessful
+	if(parsed_args.data == NULL)
+	{
+			printf("readDataFromFile returned a NULL pointer!");
+			MPI_Abort(MPI_COMM_WORLD, -1);
+	}
+	
+	return parsed_args;
 }
 
 //Calculates the count and displacement used by mpi_scatterv
@@ -406,16 +378,17 @@ void outputResult(DATA_TYPE *data, int n)
 		printf("%f\n", data[i]);
 	}*/
 	
-	return;
+	printf("Output result stub is called!\n");
 }
 
-double masterProcess(int id, char **argv)
+double masterProcess(int id, ParsedArgs args)
 {
+	double elapsed_time;
+	
 	//Needed by master node only
-	int output_enabled = 1;		//If we're running a benchmark, don't output the result
-	int elements = 0;			//How many elements are in the expected data set
-	DATA_TYPE *all_data; 		//The master's initial data buffer to hold generated data or data read from file
-	double elapsed_time;	
+	int output_enabled = args.output_enabled;	//If we're running a benchmark, don't output the result
+	int elements = args.elements;				//How many elements are in the expected data set
+	DATA_TYPE *all_data = args.data; 			//The master's initial data buffer to hold generated data or data read from file
 	
 	//Variables related to send and receiving data
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
@@ -427,11 +400,9 @@ double masterProcess(int id, char **argv)
 	//Data related variables for all nodes
 	int filesize;
 	int i,j, retval;
-	DATA_TYPE *data, *tdata1, *tdata2;
-	
-	//Prepare the data to be sorted based in the program input.
-	all_data = parseArgs(argv, &elements, &output_enabled);
+	DATA_TYPE *data, *tdata1, *tdata2;	
 
+	
 	/*****************************************************/
 	/*  Distributing Data and Sorting Initial Sublists   */
 	/*****************************************************/	
@@ -445,19 +416,20 @@ double masterProcess(int id, char **argv)
 	{
 		printf("NOTE: Only 1 process found. Running a serial version of Mergesort instead\n");
 		MergeSort(all_data, elements, sizeof(DATA_TYPE), compfunc);
-		
+
 		//Stop recording the sorting time
-		elapsed_time += MPI_Wtime();	
-		
+		elapsed_time += MPI_Wtime();			
+
 		#ifndef NO_VERIFY
 		//Verify the data is indeed sorted
-		checkSorted(data, elements, compfunc);
+		checkSorted(all_data, elements, compfunc);
 		#endif
 		
 		//Outputs the results if needed
 		if(output_enabled)
-			outputResult(all_data, elements);
+				outputResult(all_data, elements);
 		
+		free(all_data);
 		return elapsed_time;
 	}
 	
@@ -601,12 +573,13 @@ int main(int argc, char *argv[])
 {
 	int id;						//Rank of the current process
 	double elapsed_time;		//Records how long the calculation took
+	ParsedArgs parsed_args;		//Interpreted input arguments for the main process
 	
 	if(argc < 2)
 	{
 		printf("Insufficient arguments!\n");
-		printf("To sort a file: psort filename\n");
-		printf("To run a benchmark: psort %s n\n", BENCHMARK_STRING);
+		printf("usage: psort <optional args> filename\n");
+		printf("Currently, the only optional arg implemented is %s \n", NO_OUTPUT_ARG);
 		return 0;
 	}
 	
@@ -618,10 +591,12 @@ int main(int argc, char *argv[])
 	//Let rank 0 be the master process.
 	if(id == 0)
 	{
-		printf("Processes available: %d\n", p);
+		//Parse the input arguments and read the data file specified
+		parsed_args = parseArgs(argc, argv);
 	
 		//Start the Mergesort Master
-		elapsed_time = masterProcess(id, argv);
+		printf("Processes available: %d\n", p);
+		elapsed_time = masterProcess(id, parsed_args);
 		printf("Sorting took %lf seconds.\n", elapsed_time);
 	}
 	
