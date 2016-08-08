@@ -1,20 +1,13 @@
 /*Main entry point for PARALLEL mergesort*/
-
 #include <stdlib.h>
 #include <mpi.h>
 #include "mergesort.h"
 
-#define FILENAME 	"data.txt"			//Filename of the target data file
-
-typedef struct{
-	enum {NONE = 0, SEND, RECV} op;		//Should the node send data, receive data, or do nothing?
-	int elements;						//# of elements to receive or send for this operation
-	int target;							//The node to send/receive from
-	int completed;						//Does node 1 have a completed merged list?
-} MergeInstr;
+// #define NO_VERIFY					//Uncomment if you do NOT wish the program to verify if the final data is sorted
 
 typedef double DATA_TYPE;				//Change the data type for the values held in the database here
 #define MPI_DATA_TYPE MPI_DOUBLE		//MPI data type must be equivalent to DATA_TYPE. A custom MPI data type might be needed.
+
 
 int compfunc(DATA_TYPE *a, DATA_TYPE *b)
 {
@@ -31,37 +24,67 @@ int compfunc(DATA_TYPE *a, DATA_TYPE *b)
 		return 0;
 }
 
-int checkSorted(DATA_TYPE *data, int n)
+DATA_TYPE* readDataFromFile(char *filename, int *elements_read)
 {
-	int i;
-	int sorted = 1;
-	
-	for(i=1; i<n; i++)
-	{
-		if(data[i-1] > data[i])
-		{
-			sorted = 0;
-			break;
-		}
-	}
-	printf("The array %s sorted!\n", sorted? "is":"is NOT");
-	return sorted;
-}
-
-/*Get the file size*/
-size_t getFileSize(FILE *fp)
-{
+	FILE *infile;
 	size_t filesize;
+	DATA_TYPE *all_data; 
 	
-	//Find the filesize
-	fseek(fp, 0L, SEEK_END);
-	filesize = ftell(fp);
-	rewind(fp);					//Rewind the file pointer to beginning
+	int elements, retval;
 	
-	return filesize;
+	//Open up the data file
+	infile = fopen(filename, "r");
+	
+	if(infile == NULL)
+	{
+		perror("readDataFromFile: Failed to open data file");
+		return NULL;
+	}
+	
+	//Get the filesize
+	fseek(infile, 0L, SEEK_END);
+	filesize = ftell(infile);
+	rewind(infile);	
+	
+	//Get the size of the input file, and allocate the data buffer based on this size.
+	//The resulting buffer will be a bit bigger than needed, but that's okay for now.
+	all_data = (DATA_TYPE*) malloc(filesize);
+	
+	//Read the data file into the buffer until we hit end of the file
+	for(elements = 0, retval = 1; retval > 0; elements++)
+		retval = fscanf(infile, "%lf\n", &all_data[elements]);		//NOTE: Change the format identifier here if DATA_TYPE has changed!
+	fclose(infile);
+	
+	//Trim the unused memory out of the data buffer.
+	//The last element is also removed since the previous file reading method adds an extra zero element
+	elements -= 1;
+	all_data = realloc(all_data, sizeof(DATA_TYPE)*elements);
+	
+	printf("Read in %d elements from the data file %s\n", elements, filename);
+	
+	//Return the pointer and number of elements
+	*elements_read = elements;
+	return all_data;
 }
 
-//Generate a data set of size n of DATA_TYPE
+/*
+Do not edit anything below this point unless you know what you're doing!
+*/
+
+/*Global definitions and variables*/
+#define BENCHMARK_STRING	"PSORT_INTERNAL_BENCHMARK"
+
+int p;		//total number of processes
+
+//A struct of arguments instructing a node where to send/receive data during phase 2 merge
+typedef struct{
+	enum {NONE = 0, SEND, RECV} op;		//Should the node send data, receive data, or do nothing?
+	int elements;						//# of elements to receive or send for this operation
+	int target;							//The node to send/receive from
+	int completed;						//Does node 1 have a completed merged list?
+} MergeInstr;
+
+//Generate a data set of size n of DATA_TYPE for testing
 DATA_TYPE* generateData(int n)
 {
 	int i;
@@ -86,6 +109,50 @@ DATA_TYPE* generateData(int n)
 	
 	printf("Generated %d elements\n", n);
 	return data;
+}
+
+DATA_TYPE* parseArgs(char *argv[], int *elements, int *output_enabled)
+{
+	DATA_TYPE *all_data;
+	
+	//Generate a random data set of doubles if the user want to simply run a serial vs parallel benchmark
+	if(strcmp(argv[1], BENCHMARK_STRING) == 0)
+	{
+		printf("***Benchmark Mode Initiated***\n");
+		*elements = atoi(argv[2]);
+		*output_enabled = 0; 
+		
+		if(*elements < p)
+		{
+			printf("ERROR: Too little elements (argument n) specified for benchmarking.", *elements);
+			printf("The minimum required is the same as number of processes (%d), but got %d\n", p, *elements);
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return NULL;
+		}
+			
+		all_data = generateData(*elements);
+		if(all_data == NULL)
+		{
+			printf("Failed to generate a data set of %d elements for benchmarking!", *elements);
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return NULL;
+		}
+	}
+	
+	//If the user want to perform some actual sorting, read in the data from the specified filename
+	else
+	{
+		*output_enabled = 1; 
+		all_data = readDataFromFile(argv[1], elements);
+		if(all_data == NULL)
+		{
+			printf("readDataFromFile returned a NULL pointer!");
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return NULL;
+		}
+	}
+	
+	return all_data;
 }
 
 //Calculates the count and displacement used by mpi_scatterv
@@ -113,7 +180,7 @@ void calcCountDisp(int *node_status, int *node_disp, int p, int elements)
 		}
 }
 
-MergeInstr planMerge(int *status, int id, int p)
+MergeInstr planMerge(int *status, int id)
 {
 	int i, j;
 	int has_data_count = 0, handled = 0;
@@ -309,104 +376,132 @@ DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 	return data;
 }
 
-void masterProcess(int id, int p)
+#ifndef NO_VERIFY
+int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 {
+	int i;
+	int sorted = 1;
+	
+	for(i=1; i<n; i++)
+	{
+		if(((*comp)(&data[i-1], &data[i])) == 1)		//if(data[i-1] > data[i])
+		{
+			sorted = 0;
+			break;
+		}
+	}
+	printf("The array %s sorted!\n", sorted? "is":"is NOT");
+	return sorted;
+}
+#endif
+
+//STUB FOR NOW
+void outputResult(DATA_TYPE *data, int n)
+{
+	//int i;
+	
+	//printing all elements in the array once its sorted.
+	/*for(i = 0; i<elements; i++) 
+	{
+		printf("%f\n", data[i]);
+	}*/
+	
+	return;
+}
+
+double masterProcess(int id, char **argv)
+{
+	//Needed by master node only
+	int output_enabled = 1;		//If we're running a benchmark, don't output the result
+	int elements = 0;			//How many elements are in the expected data set
+	DATA_TYPE *all_data; 		//The master's initial data buffer to hold generated data or data read from file
+	double elapsed_time;	
+	
+	//Variables related to send and receiving data
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
 	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
 	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from
-	MPI_Status recv_status;		
-	
-	//Data variable for master node
-	FILE *infile;
-	DATA_TYPE *all_data; 
+	MPI_Status recv_status;	
 	
 	//Data related variables for all nodes
-	int elements;
 	int filesize;
 	int i,j, retval;
-	DATA_TYPE *data, *tdata1, *tdata2; 
+	DATA_TYPE *data, *tdata1, *tdata2;
 	
-	//Other initializations
+	//Prepare the data to be sorted based in the program input.
+	all_data = parseArgs(argv, &elements, &output_enabled);
+
+	/*****************************************************/
+	/*  Distributing Data and Sorting Initial Sublists   */
+	/*****************************************************/	
+	
+	//Start recording the sorting time.
+	printf("\n======BEGIN=======\n\n");
+	elapsed_time = -MPI_Wtime();		
+	
+	//If there's only one process available, just do a simple serial mergesort
+	if(p == 1)
+	{
+		printf("NOTE: Only 1 process found. Running a serial version of Mergesort instead\n");
+		MergeSort(all_data, elements, sizeof(DATA_TYPE), compfunc);
+		
+		//Stop recording the sorting time
+		elapsed_time += MPI_Wtime();	
+		
+		#ifndef NO_VERIFY
+		//Verify the data is indeed sorted
+		checkSorted(data, elements, compfunc);
+		#endif
+		
+		//Outputs the results if needed
+		if(output_enabled)
+			outputResult(all_data, elements);
+		
+		return elapsed_time;
+	}
+	
+	//Proceeding with parallel mergesort if there's more than 1 processes
+	
 	node_status = (int*) malloc(sizeof(int)*p);
 	node_disp = (int*) malloc(sizeof(int)*p);
 	merge_status = (int*) malloc(sizeof(int)*p);
 	
-	
-	/*
-	//Open up the data file
-	infile = fopen(FILENAME, "r");
-	if(infile == NULL)
-	{
-		perror("Failed to open data file");
-		return -1;
-	}
-	
-	filesize = getFileSize(infile);
-	
-	//Get the size of the input file, and allocate the data buffer based on this size.
-	//The resulting buffer will be a bit bigger than needed, but that's okay for now.
-	all_data = (DATA_TYPE*) malloc(filesize);
-	
-	//Read the data file into the buffer until we hit end of the file
-	for(elements = 0, retval = 1; retval > 0; elements++)
-		retval = fscanf(infile, "%lf\n", &all_data[elements]);		//NOTE: Change the format identifier here if DATA_TYPE has changed!
-	fclose(infile);
-	
-	//Trim the unused memory out of the data buffer.
-	//The last element is also removed since the previous file reading method adds an extra zero element
-	elements -= 1;
-	all_data = realloc(all_data, sizeof(DATA_TYPE)*elements);
-	
-	printf("Read in %d elements from the data file %s\n", elements, FILENAME);
-	
-	*/
-	
-	/*Since Myth can't access files it seems, we'll temporarily just generate the values*/
-	elements = 10000000;
-	all_data = generateData(elements);
-	
-	printf("\n======BEGIN=======\n\n");
-	printf("***Broadcasting Size!***\n");
-	
 	//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
+	printf("***Broadcasting Size!***\n");
 	MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	
 	//Calculating how many elements each process will be receiving, and its displacement
 	calcCountDisp(node_status, node_disp, p, elements);
 	data = (DATA_TYPE*) malloc(sizeof(DATA_TYPE) * node_status[id]);
 	
-	printf("***Distributing Data!***\n");
-	
 	//Send a chunk of the data file to all nodes
+	printf("***Distributing Data!***\n");
 	MPI_Scatterv(all_data, node_status, node_disp, MPI_DATA_TYPE, data, node_status[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
 	free(all_data);
 	free(node_disp);
 	
-	printf("***Sorting Sublists!***\n");
-	
 	//Calling merge sort to sort the received data portion. 
+	printf("***Sorting Sublists!***\n");
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
 	MPI_Barrier(MPI_COMM_WORLD);
-	
 	
 	/*****************************************************/
 	/* Beginning merging sublists across nodes (phase 2) */
 	/*****************************************************/
 	
 	printf("***Phase 2 Merging Begins!***\n");
-
-	instr.completed = 0;
-	i = 0;
 	
 	memcpy(merge_status, node_status, sizeof(int)*p);
-	
+	instr.completed = 0;
+	i = 0;
+
 	while(!instr.completed)
 	{
 		printf("***Phase 2 iteration %d***\n", i++);
-		instr = planMerge(merge_status, id, p);
-		
+
 		//Process 0 will only receive data from other Processes at any iteration
+		instr = planMerge(merge_status, id);
 		if(instr.op == RECV)
 			data = recvAndMerge(data, node_status[id], instr);
 		
@@ -416,21 +511,26 @@ void masterProcess(int id, int p)
 		//Wait for every node to complete this iteration 
 		MPI_Barrier(MPI_COMM_WORLD);
 	}
-		
-	checkSorted(data, elements);
-		
-	//printing all elements in the array once its sorted.
-	/*for(i = 0; i<elements; i++) 
-	{
-		printf("%f\n", data[i]);
-	}*/
+	
+	//Stop recording the sorting time
+	elapsed_time += MPI_Wtime();			
+
+	#ifndef NO_VERIFY
+	//Verify the data is indeed sorted
+	checkSorted(data, elements, compfunc);
+	#endif
+	
+	//Outputs the results if needed
+	if(output_enabled)
+			outputResult(all_data, elements);
 	
 	free(data);
 	free(node_status);
 	free(merge_status);
+	return elapsed_time;
 }
 
-void salveProcess(int id, int p)
+void salveProcess(int id)
 {
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
@@ -459,7 +559,7 @@ void salveProcess(int id, int p)
 	MPI_Scatterv(NULL, node_status, node_disp, MPI_DATA_TYPE, data, node_status[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
 	free(node_disp);
 	
-	//Calling merge sort to sort the received data portion. 
+	//Calling merge sort to sort the received sublist. 
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
 	MPI_Barrier(MPI_COMM_WORLD);
 	
@@ -467,15 +567,13 @@ void salveProcess(int id, int p)
 	/* Beginning merging sublists across nodes (phase 2) */
 	/*****************************************************/
 
+	memcpy(merge_status, node_status, sizeof(int)*p);
 	instr.completed = 0;
 	i = 0;
 	
-	memcpy(merge_status, node_status, sizeof(int)*p);
-	
 	while(!instr.completed)
 	{
-		instr = planMerge(merge_status, id, p);
-
+		instr = planMerge(merge_status, id);
 		if(instr.op == RECV)
 			data = recvAndMerge(data, node_status[id], instr);
 		
@@ -501,24 +599,37 @@ void salveProcess(int id, int p)
 
 int main(int argc, char *argv[]) 
 {
-	//MPI related variables
-	int id, p;					//Rank of the current process, and total number of processes
+	int id;						//Rank of the current process
+	double elapsed_time;		//Records how long the calculation took
+	
+	if(argc < 2)
+	{
+		printf("Insufficient arguments!\n");
+		printf("To sort a file: psort filename\n");
+		printf("To run a benchmark: psort %s n\n", BENCHMARK_STRING);
+		return 0;
+	}
 	
 	//Initialize MPI on all processes
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &id);
 	MPI_Comm_size(MPI_COMM_WORLD, &p);
 	
+	//Let rank 0 be the master process.
 	if(id == 0)
 	{
-		//Let rank 0 be the master process. 
 		printf("Processes available: %d\n", p);
-		masterProcess(id, p);
+	
+		//Start the Mergesort Master
+		elapsed_time = masterProcess(id, argv);
+		printf("Sorting took %lf seconds.\n", elapsed_time);
 	}
+	
+	//Let all other ranks be worker processes
 	else	
 	{
-		//Let all other ranks be worker processes
-		salveProcess(id, p);
+		//Start the Mergesort Slave
+		salveProcess(id);
 	}
 
 	MPI_Finalize();
