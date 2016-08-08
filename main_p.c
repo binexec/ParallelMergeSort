@@ -13,8 +13,6 @@ int compfunc(DATA_TYPE *a, DATA_TYPE *b)
 	DATA_TYPE deref_a = *a;
 	DATA_TYPE deref_b = *b;
 	
-	//printf("COMPFUNC. A:%f, B:%f\n", deref_a, deref_b);
-	
 	if(deref_a < deref_b) 
 		return -1;
 	else if(deref_a > deref_b) 
@@ -101,17 +99,17 @@ ParsedArgs parseArgs(int argc, char *argv[])
 	parsed_args.output_enabled = 1; 
 	parsed_args.no_verify = 0;
 	
-	//If there are more than 2 args, the user simply just want to sort a file
+	//If there are exactly 2 args, the user simply just want to sort a file
 	if(argc == 2)
 	{
 		//Read in data from the specified file using argument 2
 		parsed_args.data = readDataFromFile(argv[1], &parsed_args.elements);
 	}
 	
-	//If there are more than 2 args, the user has specified an option
+	//If there are more than 2 args, the user has specified at least one additional parameter
 	else
 	{
-		//Treat arguments 1 to n-2 as all options
+		//Treat arguments 2 to n-2 as all possible parameters and scan through them
 		for(i=1; i<argc-1; i++)
 		{
 			if(strncmp(argv[i], NO_OUTPUT_ARG, strlen(NO_OUTPUT_ARG)) == 0)
@@ -121,7 +119,7 @@ ParsedArgs parseArgs(int argc, char *argv[])
 				parsed_args.no_verify = 1; 
 			
 			else
-				printf("Ignored unknown option \"%s\"\n", argv[i]);
+				printf("Ignored unknown parameter \"%s\"\n", argv[i]);
 		}
 
 		//Treat the argument n-1 as the filename, and read in data from the specified file
@@ -141,29 +139,29 @@ ParsedArgs parseArgs(int argc, char *argv[])
 //Calculates the count and displacement used by mpi_scatterv
 void calcCountDisp(int *node_status, int *node_disp, int p, int elements)
 {
-		int i, j;
-		int elements_per_node = elements/p;
+	int i, j;
+	int elements_per_node = elements/p;
+	
+	if(elements < p)
+	{
+		memset(node_disp, 0, sizeof(int)*p);	//Set all node_disp[i] = 0
+		memset(node_status, 0, sizeof(int)*p);	//Set all node_status[i] = 0
+		node_status[0] = elements;
+		return;
+	}
+	
+	for(i=0; i<p; i++)
+	{
+		if(i == p-1)
+			node_status[i] = elements - i*elements_per_node;
+		else
+			node_status[i] = elements_per_node;
 		
-		if(elements < p)
-		{
-			memset(node_disp, 0, sizeof(int)*p);	//Set all node_disp[i] = 0
-			memset(node_status, 0, sizeof(int)*p);	//Set all node_status[i] = 0
-			node_status[0] = elements;
-			return;
-		}
-		
-		for(i=0; i<p; i++)
-		{
-			if(i == p-1)
-				node_status[i] = elements - i*elements_per_node;
-			else
-				node_status[i] = elements_per_node;
-			
-			node_disp[i] = i*elements_per_node;
-		}
+		node_disp[i] = i*elements_per_node;
+	}
 }
 
-MergeInstr planMerge(int *status, int id)
+MergeInstr planMerge(int *data_remaining, int id)
 {
 	int i, j;
 	int has_data_count = 0, handled = 0;
@@ -178,10 +176,10 @@ MergeInstr planMerge(int *status, int id)
 	//Count how many nodes have data during this iteration
 	for(i=1; i<p; i++)
 	{
-		if(status[i] > 0)
+		if(data_remaining[i] > 0)
 			has_data_count++;
 	}
-	has_data_count++;		//Add 1 to count since node 0 always has data and is ignored in the previosu loop.	
+	has_data_count++;		//Add 1 to count since node 0 always has data and is ignored in the previous loop.	
 	
 	if(has_data_count == 1)
 	{
@@ -193,14 +191,14 @@ MergeInstr planMerge(int *status, int id)
 	for(i=0; i<p; i++)
 	{
 		//No need to process nodes that do not have data left
-		if(status[i] <= 0)
+		if(data_remaining[i] <= 0)
 			continue;
 		
 		//If all nodes have data, then this must be the first iteration.
 		if(has_data_count == p)
 		{
-			//If this is the last node and there are even number of nodes, don't merge on the first iteration
-			if(i == p-1 && p % 2 == 1)
+			//If this is the last node and there are odd number of nodes, don't merge on the first iteration
+			if(i == p-1 && p%2 == 1)
 			{
 				if(i == id )
 				{
@@ -216,10 +214,10 @@ MergeInstr planMerge(int *status, int id)
 				{
 					instr.op = SEND;
 					instr.target = i-1;
-					instr.elements = status[i];
+					instr.elements = data_remaining[i];
 					instr.completed = 0;
 				}
-				status[i] = 0;
+				data_remaining[i] = 0;
 			}
 			
 			//If i'm an even numbered node, receive data from node i+1
@@ -229,10 +227,10 @@ MergeInstr planMerge(int *status, int id)
 				{
 					instr.op = RECV;
 					instr.target = i+1;
-					instr.elements = status[i+1];
+					instr.elements = data_remaining[i+1];
 					instr.completed = 0;
 				}
-				status[i] += status[i+1];
+				data_remaining[i] += data_remaining[i+1];
 			}
 		}
 		
@@ -241,7 +239,7 @@ MergeInstr planMerge(int *status, int id)
 		{
 			handled++;
 			
-			//If i'm the last node with data, do nothing for the next iteration.
+			//If i'm the last node with data, do nothing this iteration.
 			if(handled == has_data_count)
 			{
 				if(i == id)
@@ -256,15 +254,15 @@ MergeInstr planMerge(int *status, int id)
 			{
 				//Find the next node with data 
 				for(j=i+1; j<p; j++)
-					if(status[j] > 0) break;
+					if(data_remaining[j] > 0) break;
 				
-				status[i] += status[j];
+				data_remaining[i] += data_remaining[j];
 				
 				if(i == id)
 				{
 					instr.op = RECV;
 					instr.target = j;
-					instr.elements = status[j];
+					instr.elements = data_remaining[j];
 					instr.completed = 0;
 				}
 			}
@@ -275,14 +273,14 @@ MergeInstr planMerge(int *status, int id)
 				{
 					//Find the next node with data 
 					for(j=i-1; j>=0; j--)
-						if(status[j] > 0) break;
+						if(data_remaining[j] > 0) break;
 				
 					instr.op = SEND;
-					instr.elements = status[i];
+					instr.elements = data_remaining[i];
 					instr.target = j;
 					instr.completed = 0;
 				}
-				status[i] = 0;
+				data_remaining[i] = 0;
 			}
 		}
 		
@@ -296,14 +294,14 @@ MergeInstr planMerge(int *status, int id)
 			{
 				//Find the next node with data 
 				for(j=i+1; j<p; j++)
-					if(status[j] > 0) break;
+					if(data_remaining[j] > 0) break;
 				
-				status[i] += status[j];
+				data_remaining[i] += data_remaining[j];
 				
 				if(i == id)
 				{
 					instr.op = RECV;
-					instr.elements = status[j];
+					instr.elements = data_remaining[j];
 					instr.target = j;
 					instr.completed = 0;
 				}
@@ -315,14 +313,14 @@ MergeInstr planMerge(int *status, int id)
 				{
 					//Find the next node with data 
 					for(j=i-1; j>=0; j--)
-						if(status[j] > 0) break;
+						if(data_remaining[j] > 0) break;
 				
 					instr.op = SEND;
-					instr.elements = status[i];
+					instr.elements = data_remaining[i];
 					instr.target = j;
 					instr.completed = 0;
 				}
-				status[i] = 0;
+				data_remaining[i] = 0;
 			}
 		}
 	}
@@ -331,7 +329,7 @@ MergeInstr planMerge(int *status, int id)
 
 DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 {
-	//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+	//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, node_status_next[id], instr.completed);
 	//printf("Node: %d, RECV buffer size: %d\n", id, node_status[id] + instr.elements);
 
 	DATA_TYPE *tdata1;			//Temporary buffer to hold the current data at the node
@@ -341,7 +339,7 @@ DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 	tdata1 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*n);					
 	tdata2 = (DATA_TYPE*) malloc(sizeof(DATA_TYPE)*instr.elements);		
 
-	memcpy(tdata1, data, (sizeof(DATA_TYPE)*n));						//tdata1 = data
+	memcpy(tdata1, data, (sizeof(DATA_TYPE)*n));	//tdata1 = data
 	
 	//Receive the expected data
 	MPI_Recv(tdata2, instr.elements, MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD, &recv_status);
@@ -403,7 +401,7 @@ double masterProcess(int id, ParsedArgs args)
 	//Variables related to send and receiving data
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
-	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
+	int *node_status_next;		//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
 	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from
 	MPI_Status recv_status;	
 	
@@ -438,6 +436,7 @@ double masterProcess(int id, ParsedArgs args)
 		if(output_enabled)
 				outputResult(all_data, elements);
 		
+		//Cleanup and exit
 		free(all_data);
 		return elapsed_time;
 	}
@@ -446,7 +445,7 @@ double masterProcess(int id, ParsedArgs args)
 	
 	node_status = (int*) malloc(sizeof(int)*p);
 	node_disp = (int*) malloc(sizeof(int)*p);
-	merge_status = (int*) malloc(sizeof(int)*p);
+	node_status_next = (int*) malloc(sizeof(int)*p);
 	
 	//Broadcast the number of elements to all other processes so they can allocate a memory buffer for the task.
 	printf("***Broadcasting Size!***\n");
@@ -462,7 +461,7 @@ double masterProcess(int id, ParsedArgs args)
 	free(all_data);
 	free(node_disp);
 	
-	//Calling merge sort to sort the received data portion. 
+	//Calling mergesort to sort the received data portion. 
 	printf("***Sorting Sublists!***\n");
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
 	MPI_Barrier(MPI_COMM_WORLD);
@@ -472,8 +471,7 @@ double masterProcess(int id, ParsedArgs args)
 	/*****************************************************/
 	
 	printf("***Phase 2 Merging Begins!***\n");
-	
-	memcpy(merge_status, node_status, sizeof(int)*p);
+	memcpy(node_status_next, node_status, sizeof(int)*p);
 	instr.completed = 0;
 	i = 0;
 
@@ -482,12 +480,12 @@ double masterProcess(int id, ParsedArgs args)
 		printf("***Phase 2 iteration %d***\n", i++);
 
 		//Process 0 will only receive data from other Processes at any iteration
-		instr = planMerge(merge_status, id);
+		instr = planMerge(node_status_next, id);
 		if(instr.op == RECV)
 			data = recvAndMerge(data, node_status[id], instr);
 		
 		//Update the current node statuses
-		memcpy(node_status, merge_status, sizeof(int)*p);
+		memcpy(node_status, node_status_next, sizeof(int)*p);
 		
 		//Wait for every node to complete this iteration 
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -506,7 +504,7 @@ double masterProcess(int id, ParsedArgs args)
 	
 	free(data);
 	free(node_status);
-	free(merge_status);
+	free(node_status_next);
 	return elapsed_time;
 }
 
@@ -514,7 +512,7 @@ void slaveProcess(int id)
 {
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
 	int *node_status;			//An array keeping track of the data size of each node's sorted sublist at the CURRENT time
-	int *merge_status;			//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
+	int *node_status_next;		//An array keeping track of the data size of each node's sorted sublist AFTER one iteration of phase 2 merge
 	MergeInstr instr;			//A struct telling a node where to send its sorted sublist, or who to receive it from	
 	
 	//Data related variables for all nodes
@@ -526,7 +524,7 @@ void slaveProcess(int id)
 	//Other initializations
 	node_status = (int*) malloc(sizeof(int)*p);
 	node_disp = (int*) malloc(sizeof(int)*p);
-	merge_status = (int*) malloc(sizeof(int)*p);
+	node_status_next = (int*) malloc(sizeof(int)*p);
 	
 	//Wait for node 0 to broadcast the number of elements
 	MPI_Bcast(&elements, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -539,7 +537,7 @@ void slaveProcess(int id)
 	MPI_Scatterv(NULL, node_status, node_disp, MPI_DATA_TYPE, data, node_status[id], MPI_DATA_TYPE, 0, MPI_COMM_WORLD);
 	free(node_disp);
 	
-	//Calling merge sort to sort the received sublist. 
+	//Calling mergesort to sort the received sublist. 
 	MergeSort(data, node_status[id], sizeof(DATA_TYPE), compfunc);
 	MPI_Barrier(MPI_COMM_WORLD);
 	
@@ -547,34 +545,35 @@ void slaveProcess(int id)
 	/* Beginning merging sublists across nodes (phase 2) */
 	/*****************************************************/
 
-	memcpy(merge_status, node_status, sizeof(int)*p);
+	memcpy(node_status_next, node_status, sizeof(int)*p);
 	instr.completed = 0;
 	i = 0;
 	
 	while(!instr.completed)
 	{
-		instr = planMerge(merge_status, id);
+		instr = planMerge(node_status_next, id);
+		
+		//The node is instructed to receive a sorted sublist from another node
 		if(instr.op == RECV)
 			data = recvAndMerge(data, node_status[id], instr);
 		
-		//Each slave node will have to send their sorted sublist to another node at some iteration. 
-		//Once send, this node will be idle for the rest of the iterations.
+		//Every slave node must send their sorted sublist to another node at some iteration. Once send, the slave node will become idle/empty.
 		else if(instr.op == SEND)
 		{
-			//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, merge_status[id], instr.completed);
+			//printf("NODE: %d Iter: %d OP: SEND, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, node_status_next[id], instr.completed);
 			MPI_Send(data, node_status[id], MPI_DATA_TYPE, instr.target, 0, MPI_COMM_WORLD);
 			free(data);	
 		}
 		
 		//Update the current node statuses
-		memcpy(node_status, merge_status, sizeof(int)*p);
+		memcpy(node_status, node_status_next, sizeof(int)*p);
 		
 		//Wait for every node to complete this iteration 
 		MPI_Barrier(MPI_COMM_WORLD);
 	}
 	
 	free(node_status);
-	free(merge_status);
+	free(node_status_next);
 }
 
 int main(int argc, char *argv[]) 
@@ -586,8 +585,8 @@ int main(int argc, char *argv[])
 	if(argc < 2)
 	{
 		printf("Insufficient arguments!\n");
-		printf("Usage: psort <optional args> filename\n");
-		printf("Implemented optional args: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
+		printf("Usage: psort <optional parameter> filename\n");
+		printf("Implemented parameter: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
 		return 0;
 	}
 	
