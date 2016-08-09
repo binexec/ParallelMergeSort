@@ -26,10 +26,20 @@ typedef struct{
 	int completed;						//Does node 1 have a completed merged list?
 } MergeInstr;
 
+//Parase the raw input arguments into appropriate settings used by the program
 ParsedArgs parseArgs(int argc, char *argv[])
 {
 	int i;
 	ParsedArgs pargs;
+	
+	//Make sure we have enough arguments first
+	if(argc < MIN_ARGS)
+	{
+		printf("Insufficient arguments!\n");
+		printf("Usage: psort infile outfile <optional parameters> \n");
+		printf("Optional parameters: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
+		MPI_Abort(MPI_COMM_WORLD, -1);
+	}
 
 	//Default values for args to be returned
 	pargs.output_enabled = 1; 
@@ -76,7 +86,7 @@ ParsedArgs parseArgs(int argc, char *argv[])
 	return pargs;
 }
 
-//Calculates the count and displacement used by mpi_scatterv
+//Calculates the count and displacement for each process used by mpi_scatterv
 void calcCountDisp(int *node_status, int *node_disp, int p, int elements)
 {
 	int i, j;
@@ -101,6 +111,8 @@ void calcCountDisp(int *node_status, int *node_disp, int p, int elements)
 	}
 }
 
+//Calculates a new global snapshot of how much data is at each process at the next iteration,
+//and instructs the calling process where to send/receive its sorted sublist
 MergeInstr planMerge(int *data_remaining, int id)
 {
 	int i, j;
@@ -267,6 +279,7 @@ MergeInstr planMerge(int *data_remaining, int id)
 	return instr;
 }
 
+//Receive a sorted sublist from another process, and merge it with its own sublist
 DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 {
 	//printf("NODE: %d Iter: %d OP: RECV, Target: %d Before: %d Elements to S/R: %d After: %d Comp: %d\n", id, i++, instr.target, node_status[id], instr.elements, node_status_next[id], instr.completed);
@@ -297,6 +310,7 @@ DATA_TYPE* recvAndMerge(DATA_TYPE *data, int n, MergeInstr instr)
 	return data;
 }
 
+//Verify if a given array is indeed sorted
 int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 {
 	int i;
@@ -314,6 +328,7 @@ int checkSorted(DATA_TYPE *data, int n, int (*comp)(void *, void *))
 	return sorted;
 }
 
+//The code ran by the master process (process id 0)
 double masterProcess(int id, ParsedArgs args)
 {
 	double elapsed_time;
@@ -435,6 +450,7 @@ double masterProcess(int id, ParsedArgs args)
 	return elapsed_time;
 }
 
+//The code ran by all other slave nodes
 void slaveProcess(int id)
 {
 	int *node_disp;				//An array used by scatterv to know where to break the data for distribution
@@ -508,14 +524,6 @@ int main(int argc, char *argv[])
 	int id;						//Rank of the current process
 	double elapsed_time;		//Records how long the calculation took
 	ParsedArgs parsed_args;		//Interpreted input arguments for the main process
-	
-	if(argc < MIN_ARGS)
-	{
-		printf("Insufficient arguments!\n");
-		printf("Usage: psort infile outfile <optional parameters> \n");
-		printf("Optional parameters: %s %s\n", NO_OUTPUT_ARG, NO_VERIFY_ARG);
-		return 0;
-	}
 	
 	//Initialize MPI on all processes
 	MPI_Init(&argc, &argv);

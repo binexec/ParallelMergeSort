@@ -1,20 +1,22 @@
+/*
+Here is a sample implementation of a userdef.c
+The sample target data file simply has a "double" on each line. 
+You can generate your own sample data set compatible with these definitions using "generate.c"
+*/
+
 #include "userdef.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/*
-USER SPECIFIED FUNCTION userInit
-*/
+//We don't need any additional initialization, since MPI_Double is a standard MPI data type
 void userInit()
 {
 	return;
 }
 
-/*
-USER SPECIFIED FUNCTION compFunc
-*/
+//Since doubles can be compared using the standard operators, our comparison function is pretty simple.
 int compFunc(DATA_TYPE *a, DATA_TYPE *b)
 {
 	DATA_TYPE deref_a = *a;
@@ -28,9 +30,7 @@ int compFunc(DATA_TYPE *a, DATA_TYPE *b)
 		return 0;
 }
 
-/*
-USER SPECIFIED FUNCTION readDataFromFile
-*/
+//Read a double from every line of the file into a newly allocated buffer, and return it.
 DATA_TYPE* readDataFromFile(char *filename, int *elements_read)
 {
 	FILE *infile;
@@ -74,9 +74,7 @@ DATA_TYPE* readDataFromFile(char *filename, int *elements_read)
 	return all_data;
 }
 
-/*
-USER SPECIFIED FUNCTION writeDataToFile
-*/
+//The sorted "data" array would contain doubles, so we'll simply write a double onto each line in the output file.
 void writeDataToFile(DATA_TYPE *data, int n, char *filename)
 {
 	int i;
